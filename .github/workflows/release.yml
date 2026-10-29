@@ -1,0 +1,32 @@
+name: Release
+
+# Publishes a release whenever module.json on the default branch carries a version that has no tag yet.
+# Foundry installs from: https://github.com/BrianDEdwards/stl-foundry/releases/latest/download/module.json
+on:
+  push:
+    paths: [module.json, scripts/**, styles/**, .github/workflows/release.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(jq -r .version module.json)
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION already released"; exit 0
+          fi
+          DOWNLOAD="https://github.com/${{ github.repository }}/releases/download/v$VERSION/module.zip"
+          jq --arg d "$DOWNLOAD" '.download = $d' module.json > dist-module.json && mv dist-module.json module.json
+          zip -r module.zip module.json scripts styles
+          gh release create "v$VERSION" module.zip module.json --title "v$VERSION" --notes "Casefiles v$VERSION" --target "$GITHUB_SHA"
