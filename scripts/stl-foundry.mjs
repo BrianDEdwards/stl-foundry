@@ -458,10 +458,16 @@ const Evidence = {
     ui.notifications.info(`Filed "${ev.title || TYPES[ev.type].label}" in the Evidence Locker.`);
   },
 
-  async flip(tile) {
-    const ev = getEvidence(tile);
-    const flipped = !ev.flipped;
-    await tile.update({ "texture.src": flipped ? ev.backSrc : ev.frontSrc, [`flags.${MOD}.evidence.flipped`]: flipped });
+  /** Flips are queued per tile so a quick second flip reads the state the first one left, not a stale one. */
+  flip(tile) {
+    this._flips ??= new Map();
+    const queued = (this._flips.get(tile.id) ?? Promise.resolve()).then(async () => {
+      const ev = getEvidence(tile);
+      const flipped = !ev.flipped;
+      await tile.update({ "texture.src": flipped ? ev.backSrc : ev.frontSrc, [`flags.${MOD}.evidence.flipped`]: flipped });
+    });
+    this._flips.set(tile.id, queued.catch(() => {}));
+    return queued;
   },
 
   async notes(tile, notes) {
@@ -475,9 +481,6 @@ const Evidence = {
   /** Players can't update tiles, so their requests go over the socket to the active GM. */
   /** Double-click entry point. Two listeners can see the same double-click, so repeats within 400ms are ignored. */
   activate(tile, open) {
-    const now = Date.now();
-    if (this._last?.id === tile.id && now - this._last.time < 400) return;
-    this._last = { id: tile.id, time: now };
     if (open) EvidenceSheet.open(tile);
     else this.request("flip", tile);
   },
@@ -830,26 +833,31 @@ Hooks.once("ready", () => {
   Tracker.draw();
 
   // Double-click flips evidence, shift + double-click opens the close-up with notes. Works on any layer.
-  document.addEventListener("dblclick", event => {
+  // Detected from raw pointer presses rather than the browser's dblclick, which goes quiet when you keep clicking
+  // (a third and fourth click count as a triple/quadruple click, not a second double-click).
+  let last = null;
+  document.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || !canvas.ready) return;
     const board = canvas.app?.canvas ?? canvas.app?.view;
     const target = event.target;
-    if (!canvas.ready) return;
     if (target !== board && (target?.closest?.(".application, .app, #sidebar, #stl-initiative, button, a, input, textarea, select")
       || !document.elementsFromPoint(event.clientX, event.clientY).includes(board))) return;
     const client = { x: event.clientX, y: event.clientY };
-    const point = canvas.canvasCoordinatesFromClient?.(client) ?? canvas.stage.worldTransform.applyInverse(client);
-    const tile = Evidence.at(point);
-    if (!tile) return;
-    Evidence.activate(tile, event.shiftKey);
+    const tile = Evidence.at(canvas.canvasCoordinatesFromClient?.(client) ?? canvas.stage.worldTransform.applyInverse(client));
+    const now = event.timeStamp;
+    if (tile && last?.id === tile.id && now - last.time < 400 && Math.hypot(client.x - last.x, client.y - last.y) < 12) {
+      last = null; // the next press starts a fresh double-click
+      Evidence.activate(tile, event.shiftKey);
+    } else last = tile ? { id: tile.id, time: now, ...client } : null;
   }, { capture: true });
 });
 
-// On the Tiles layer the tile itself also receives the double-click: flip instead of opening the core tile settings.
+// On the Tiles layer, double-clicking a tile would open the core tile settings. Evidence handles its own double-clicks.
 Hooks.once("setup", () => {
   const proto = CONFIG.Tile.objectClass.prototype;
   const original = proto._onClickLeft2;
   proto._onClickLeft2 = function(event) {
-    if (getEvidence(this.document)) return Evidence.activate(this.document, !!(event?.shiftKey ?? event?.nativeEvent?.shiftKey));
+    if (getEvidence(this.document)) return;
     return original.call(this, event);
   };
 });
