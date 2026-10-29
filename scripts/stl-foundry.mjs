@@ -339,8 +339,24 @@ const Evidence = {
   },
 
   /** Players can't update tiles, so their requests go over the socket to the active GM. */
-  request(action, tile, ...args) {
-    if (game.user.isGM) return this[action](tile, ...args);
+  /** Double-click entry point. Two listeners can see the same double-click, so repeats within 400ms are ignored. */
+  activate(tile, open) {
+    const now = Date.now();
+    if (this._last?.id === tile.id && now - this._last.time < 400) return;
+    this._last = { id: tile.id, time: now };
+    if (open) EvidenceSheet.open(tile);
+    else this.request("flip", tile);
+  },
+
+  async request(action, tile, ...args) {
+    if (game.user.isGM) {
+      try { return await this[action](tile, ...args); }
+      catch (err) {
+        console.error(`${MOD} | ${action} failed`, err);
+        ui.notifications.error(`Casefiles: ${action} failed (${err.message}). See the console (F12).`);
+      }
+      return;
+    }
     if (!game.users.activeGM) return ui.notifications.warn("A GM needs to be online to change evidence.");
     game.socket.emit(SOCKET, { action, sceneId: tile.parent.id, tileId: tile.id, args });
   },
@@ -606,22 +622,24 @@ Hooks.once("ready", () => {
   // Double-click flips evidence, shift + double-click opens the close-up with notes. Works on any layer.
   document.addEventListener("dblclick", event => {
     const board = canvas.app?.canvas ?? canvas.app?.view;
-    if (!canvas.ready || (event.target !== board && event.target?.id !== "board")) return;
+    const target = event.target;
+    if (!canvas.ready) return;
+    if (target !== board && (target?.closest?.(".application, .app, #sidebar, #stl-initiative, button, a, input, textarea, select")
+      || !document.elementsFromPoint(event.clientX, event.clientY).includes(board))) return;
     const client = { x: event.clientX, y: event.clientY };
     const point = canvas.canvasCoordinatesFromClient?.(client) ?? canvas.stage.worldTransform.applyInverse(client);
     const tile = Evidence.at(point);
     if (!tile) return;
-    if (event.shiftKey) EvidenceSheet.open(tile);
-    else Evidence.request("flip", tile);
+    Evidence.activate(tile, event.shiftKey);
   }, { capture: true });
 });
 
-// On the Tiles layer, double-clicking an evidence tile would also open the core tile settings. Skip that for evidence.
+// On the Tiles layer the tile itself also receives the double-click: flip instead of opening the core tile settings.
 Hooks.once("setup", () => {
   const proto = CONFIG.Tile.objectClass.prototype;
   const original = proto._onClickLeft2;
   proto._onClickLeft2 = function(event) {
-    if (getEvidence(this.document)) return;
+    if (getEvidence(this.document)) return Evidence.activate(this.document, !!(event?.shiftKey ?? event?.nativeEvent?.shiftKey));
     return original.call(this, event);
   };
 });
@@ -660,7 +678,7 @@ Hooks.on("renderTileHUD", (hud, html) => {
   if (!getEvidence(tile)) return;
   const root = html instanceof HTMLElement ? html : html[0];
   const col = root.querySelector(".col.right") ?? root;
-  for (const [icon, tip, fn] of [["fa-rotate", "Flip evidence", () => Evidence.flip(tile)], ["fa-magnifying-glass", "Open evidence", () => EvidenceSheet.open(tile)]]) {
+  for (const [icon, tip, fn] of [["fa-rotate", "Flip evidence", () => Evidence.request("flip", tile)], ["fa-magnifying-glass", "Open evidence", () => EvidenceSheet.open(tile)]]) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "control-icon";
