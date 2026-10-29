@@ -603,16 +603,27 @@ Hooks.once("ready", () => {
   loadFonts();
   Tracker.draw();
 
-  // Double-click evidence to open it (shift + double-click flips it). GMs on the Tiles layer keep the core behaviour.
+  // Double-click flips evidence, shift + double-click opens the close-up with notes. Works on any layer.
   document.addEventListener("dblclick", event => {
-    if (event.target?.id !== "board" || !canvas.ready || canvas.tiles?.active) return;
+    const board = canvas.app?.canvas ?? canvas.app?.view;
+    if (!canvas.ready || (event.target !== board && event.target?.id !== "board")) return;
     const client = { x: event.clientX, y: event.clientY };
     const point = canvas.canvasCoordinatesFromClient?.(client) ?? canvas.stage.worldTransform.applyInverse(client);
     const tile = Evidence.at(point);
     if (!tile) return;
-    if (event.shiftKey) Evidence.request("flip", tile);
-    else EvidenceSheet.open(tile);
-  });
+    if (event.shiftKey) EvidenceSheet.open(tile);
+    else Evidence.request("flip", tile);
+  }, { capture: true });
+});
+
+// On the Tiles layer, double-clicking an evidence tile would also open the core tile settings. Skip that for evidence.
+Hooks.once("setup", () => {
+  const proto = CONFIG.Tile.objectClass.prototype;
+  const original = proto._onClickLeft2;
+  proto._onClickLeft2 = function(event) {
+    if (getEvidence(this.document)) return;
+    return original.call(this, event);
+  };
 });
 
 const debouncedDraw = foundry.utils.debounce(() => Tracker.draw(), 50);
