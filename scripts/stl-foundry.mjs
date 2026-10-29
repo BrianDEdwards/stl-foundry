@@ -464,6 +464,10 @@ const Evidence = {
     const queued = (this._flips.get(tile.id) ?? Promise.resolve()).then(async () => {
       const ev = getEvidence(tile);
       const flipped = !ev.flipped;
+      // Everyone folds the card edge-on first; the texture swap then unfolds it showing the other side.
+      game.socket.emit(SOCKET, { action: "fold", sceneId: tile.parent.id, tileId: tile.id });
+      FlipAnim.fold(tile);
+      await new Promise(r => setTimeout(r, FlipAnim.HALF));
       await tile.update({ "texture.src": flipped ? ev.backSrc : ev.frontSrc, [`flags.${MOD}.evidence.flipped`]: flipped });
     });
     this._flips.set(tile.id, queued.catch(() => {}));
@@ -499,6 +503,7 @@ const Evidence = {
   },
 
   onSocket({ action, sceneId, tileId, args }) {
+    if (action === "fold") return FlipAnim.fold(canvas.scene?.tiles.get(tileId));
     if (!game.users.activeGM?.isSelf || !["flip", "notes"].includes(action)) return;
     const tile = game.scenes.get(sceneId)?.tiles.get(tileId);
     if (getEvidence(tile)) Evidence[action](tile, ...(args ?? []));
@@ -515,6 +520,55 @@ const Evidence = {
       return Math.abs(lx) <= Math.abs(t.width) / 2 && Math.abs(ly) <= Math.abs(t.height) / 2;
     });
     return hits.sort((a, b) => (b.elevation ?? 0) - (a.elevation ?? 0) || (b.sort ?? 0) - (a.sort ?? 0))[0];
+  }
+};
+
+/** Card-flip animation: squeeze the tile's sprite edge-on, swap the image, open it back out. Purely visual, per client. */
+const FlipAnim = {
+  HALF: 160,
+  folded: new Map(), // tile id -> fallback timer while the card is edge-on
+  landed: new Set(), // tile ids whose flip update arrived; the next refresh shows the new side
+
+  /** Scales the sprite's width from `from` to `to` (fractions of its current size), lifting it slightly mid-turn. */
+  tween(mesh, from, to) {
+    const bx = mesh.scale.x, by = mesh.scale.y;
+    const start = performance.now();
+    const apply = t => {
+      const e = 1 - (1 - t) ** 2;
+      const k = from + (to - from) * e;
+      const lift = 1 + 0.08 * (from > to ? e : 1 - e);
+      mesh.scale.set(bx * Math.max(k, 0.001) * lift, by * lift);
+    };
+    apply(0);
+    const step = now => {
+      if (mesh.destroyed) return;
+      const t = Math.min(1, (now - start) / this.HALF);
+      apply(t);
+      if (t < 1) requestAnimationFrame(step);
+      else if (to === 1) mesh.scale.set(bx, by);
+    };
+    requestAnimationFrame(step);
+  },
+
+  fold(tile) {
+    const mesh = tile?.object?.mesh;
+    if (!mesh || this.folded.has(tile.id)) return;
+    const bx = mesh.scale.x, by = mesh.scale.y;
+    // If the flip never lands (e.g. it failed), open the card back up.
+    this.folded.set(tile.id, setTimeout(() => {
+      this.folded.delete(tile.id);
+      if (!mesh.destroyed) mesh.scale.set(bx, by);
+    }, 2000));
+    this.tween(mesh, 1, 0);
+  },
+
+  /** On refresh after the new image is drawn, Foundry has reset the sprite's size, so open it from edge-on. */
+  unfold(tile) {
+    const id = tile.document.id;
+    if (!this.landed.delete(id) || !tile.mesh) return;
+    clearTimeout(this.folded.get(id));
+    this.folded.delete(id);
+    this.tween(tile.mesh, 0, 1);
   }
 };
 
@@ -867,7 +921,10 @@ for (const hook of ["createCombat", "updateCombat", "deleteCombat", "createComba
   Hooks.on(hook, debouncedDraw);
 }
 
-Hooks.on("updateTile", tile => {
+Hooks.on("refreshTile", tile => FlipAnim.unfold(tile));
+
+Hooks.on("updateTile", (tile, changes) => {
+  if (foundry.utils.hasProperty(changes, `flags.${MOD}.evidence.flipped`) && FlipAnim.folded.has(tile.id)) FlipAnim.landed.add(tile.id);
   if (getEvidence(tile)) EvidenceSheet.instances.get(tile.uuid)?.render();
 });
 Hooks.on("deleteTile", tile => EvidenceSheet.instances.get(tile.uuid)?.close());
