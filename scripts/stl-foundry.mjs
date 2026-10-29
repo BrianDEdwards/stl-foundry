@@ -13,13 +13,16 @@ const TYPES = {
   polaroid: { label: "Polaroid", size: [420, 500] },
   lined: { label: "Lined scrap", size: [460, 360] },
   plain: { label: "Plain scrap", size: [440, 340] },
-  book: { label: "Book", size: [380, 500] }
+  book: { label: "Book", size: [380, 500] },
+  email: { label: "Email printout", size: [440, 560] },
+  texts: { label: "Text messages", size: [340, 620] }
 };
 
 const FONT = {
   hand: "'Caveat', 'Segoe Print', cursive",
   type: "'Special Elite', 'Courier New', monospace",
-  serif: "'IM Fell English', Georgia, serif"
+  serif: "'IM Fell English', Georgia, serif",
+  sans: "Arial, Helvetica, sans-serif"
 };
 const NOTE_INK = "#1f2d5c";
 
@@ -257,6 +260,119 @@ const PAINTERS = {
     y = wrap(ctx, ev.title, w / 2 + 10, y, w - 110, 44, h - 90, "center");
     ctx.font = `italic 22px ${FONT.serif}`;
     wrap(ctx, ev.front, w / 2 + 10, y + 8, w - 110, 26, h - 40, "center");
+  },
+
+  async email(ctx, ev, side, w, h, r) {
+    paper(ctx, w, h, "#f3f2ee", r, 0.5);
+    ctx.strokeStyle = "rgba(0,0,0,0.08)";
+    ctx.beginPath(); ctx.moveTo(0, h * 0.33); ctx.lineTo(w, h * 0.33); ctx.moveTo(0, h * 0.66); ctx.lineTo(w, h * 0.66); ctx.stroke(); // fold creases
+    if (side === "back") {
+      return writeBody(ctx, ev, side, { x: 32, y: 50, maxW: w - 64, maxY: h - 20, font: `500 26px ${FONT.hand}`, lh: 30, ink: "#26221e" });
+    }
+    const lines = String(ev.front ?? "").split("\n");
+    const header = [];
+    while (lines.length && /^(from|to|cc|date|sent|subject):/i.test(lines[0])) header.push(lines.shift());
+    let y = 44;
+    ctx.fillStyle = "#222";
+    ctx.font = `bold 20px ${FONT.sans}`;
+    y = wrap(ctx, ev.title, 30, y, w - 60, 24, 120) + 6;
+    ctx.font = `14px ${FONT.sans}`;
+    for (const line of header) {
+      const [k, ...v] = line.split(":");
+      ctx.font = `bold 14px ${FONT.sans}`;
+      ctx.fillText(`${k}:`, 30, y);
+      ctx.font = `14px ${FONT.sans}`;
+      ctx.fillText(v.join(":").trim(), 100, y);
+      y += 20;
+    }
+    ctx.fillStyle = "#999";
+    ctx.fillRect(30, y - 6, w - 60, 1);
+    ctx.font = `15px ${FONT.sans}`;
+    ctx.fillStyle = "#222";
+    wrap(ctx, lines.join("\n").trim(), 30, y + 20, w - 60, 21, h - 30);
+  },
+
+  async texts(ctx, ev, side, w, h, r) {
+    ctx.save();
+    ctx.shadowColor = "rgba(0,0,0,0.6)";
+    ctx.shadowBlur = 14;
+    ctx.shadowOffsetY = 5;
+    ctx.fillStyle = side === "front" ? "#0b0b0d" : "#1d1f24";
+    ctx.beginPath(); ctx.roundRect(0, 0, w, h, 38); ctx.fill();
+    ctx.restore();
+    if (side === "back") {
+      ctx.fillStyle = "#2a2d33";
+      ctx.beginPath(); ctx.roundRect(22, 22, 96, 110, 22); ctx.fill();
+      ctx.fillStyle = "#08090b";
+      for (const [cx, cy] of [[48, 52], [92, 52], [48, 100]]) { ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI * 2); ctx.fill(); }
+      // A sticky note stuck to the back carries the back text and notes
+      ctx.save();
+      ctx.translate(w / 2, h * 0.6);
+      ctx.rotate((r() - 0.5) * 0.12);
+      ctx.translate(-130, -150);
+      paper(ctx, 260, 300, "#f1e27a", r, 0.6);
+      writeBody(ctx, ev, side, { x: 18, y: 40, maxW: 224, maxY: 285, font: `500 24px ${FONT.hand}`, lh: 26, ink: "#26221e" });
+      ctx.restore();
+      return;
+    }
+    const sx = 12, sy = 12, sw = w - 24, sh = h - 24;
+    ctx.fillStyle = "#16171b";
+    ctx.beginPath(); ctx.roundRect(sx, sy, sw, sh, 28); ctx.fill();
+    ctx.save();
+    ctx.beginPath(); ctx.roundRect(sx, sy, sw, sh, 28); ctx.clip();
+    ctx.fillStyle = "#23252b";
+    ctx.fillRect(sx, sy, sw, 70);
+    ctx.fillStyle = "#e8e8ea";
+    ctx.font = `bold 17px ${FONT.sans}`;
+    ctx.textAlign = "center";
+    ctx.fillText(ev.title || "Unknown", w / 2, sy + 50);
+    ctx.font = `11px ${FONT.sans}`;
+    ctx.fillStyle = "#8a8d96";
+    ctx.fillText("3:13 AM", w / 2, sy + 22);
+
+    // One message per line; lines starting with ">" were sent by the phone's owner.
+    const bubbleW = sw * 0.72;
+    ctx.font = `15px ${FONT.sans}`;
+    const measure = text => {
+      const words = text.split(/\s+/), out = [];
+      let line = "";
+      for (const word of words) {
+        const t = line ? `${line} ${word}` : word;
+        if (line && ctx.measureText(t).width > bubbleW - 24) { out.push(line); line = word; } else line = t;
+      }
+      out.push(line);
+      return out;
+    };
+    const msgs = String(ev.front ?? "").split("\n").filter(l => l.trim()).map(l => {
+      const mine = l.startsWith(">");
+      return { mine, lines: measure(l.replace(/^>\s*/, "")) };
+    });
+    // Stack from the bottom up like a real thread, so the latest message is always visible
+    let y = sy + sh - 18;
+    for (const m of msgs.reverse()) {
+      const bh = m.lines.length * 19 + 14;
+      const bw = Math.min(bubbleW, Math.max(...m.lines.map(l => ctx.measureText(l).width)) + 24);
+      y -= bh;
+      if (y < sy + 76) break;
+      const bx = m.mine ? sx + sw - bw - 12 : sx + 12;
+      ctx.fillStyle = m.mine ? "#2f6fe0" : "#3a3c43";
+      ctx.beginPath(); ctx.roundRect(bx, y, bw, bh, 14); ctx.fill();
+      ctx.fillStyle = "#f2f2f4";
+      ctx.textAlign = "left";
+      m.lines.forEach((l, i) => ctx.fillText(l, bx + 12, y + 24 + i * 19));
+      y -= 8;
+    }
+    // Hairline cracks across the glass
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth = 1;
+    const ox = sx + sw * (0.6 + r() * 0.3), oy = sy + sh * (0.1 + r() * 0.2);
+    for (let i = 0; i < 6; i++) {
+      let x = ox, cy = oy, a = r() * Math.PI * 2;
+      ctx.beginPath(); ctx.moveTo(x, cy);
+      for (let j = 0; j < 6; j++) { a += (r() - 0.5) * 0.8; x += Math.cos(a) * 30; cy += Math.sin(a) * 30; ctx.lineTo(x, cy); }
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 };
 
@@ -420,7 +536,8 @@ class EvidenceEditor extends ApplicationV2 {
         <input type="text" name="image" value="${esc(ev.image)}" placeholder="Polaroid photo or book cover">
         <button type="button" data-action="pick" data-tooltip="Browse"><i class="fa-solid fa-file-image"></i></button>
       </div></div>
-      <div class="form-group stacked"><label>Front</label><textarea name="front" rows="4">${esc(ev.front)}</textarea></div>
+      <div class="form-group stacked"><label>Front</label><textarea name="front" rows="4">${esc(ev.front)}</textarea>
+        <p class="hint">Email: start with From:, To: and Date: lines, and the title is the subject. Texts: one message per line, starting with &gt; for ones the phone's owner sent, and the title is the contact.</p></div>
       <div class="form-group stacked"><label>Back</label><textarea name="back" rows="4">${esc(ev.back)}</textarea></div>
       <div class="form-group"><label>Hidden from players</label><input type="checkbox" name="hidden" ${this.tile?.hidden ? "checked" : ""}></div>
       <footer class="form-footer"><button type="submit"><i class="fa-solid fa-thumbtack"></i> ${this.tile ? "Update" : "Place on scene"}</button></footer>`;

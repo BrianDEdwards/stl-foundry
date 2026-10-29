@@ -12,7 +12,9 @@ https://github.com/BrianDEdwards/stl-foundry/releases/latest/download/module.jso
 
 ## Evidence
 
-- **Create:** as GM, click the magnifying glass in the Token or Tile scene controls. Pick a type (polaroid, lined scrap, plain scrap, book), add a title, an image, and front/back text. It lands in the middle of your view, slightly askew. If a token is selected, its portrait is pre-filled as the photo.
+- **Create:** as GM, click the magnifying glass in the Token or Tile scene controls. Pick a type (polaroid, lined scrap, plain scrap, book, email printout, text messages), add a title, an image, and front/back text. It lands in the middle of your view, slightly askew. If a token is selected, its portrait is pre-filled as the photo.
+- **Emails:** start the Front text with `From:`, `To:` and `Date:` lines; the title is the subject.
+- **Text messages:** one message per line in Front, starting with `>` for messages the phone's owner sent; the title is the contact. The back is the phone case with a sticky note.
 - **Flip:** anyone double-clicks a piece of evidence to flip it, on any layer.
 - **Open:** shift + double-click opens a close-up window with Flip and a shared Notes box. Notes are written onto the back of the object in blue ink, so everyone sees them when it's flipped.
 - **GM extras:** the window has Edit and Hide/Reveal. The tile HUD (right-click on the Tiles layer) has Flip and Open buttons. Double-click no longer opens the core tile settings for evidence; use Edit instead.
