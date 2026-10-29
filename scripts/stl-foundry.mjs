@@ -412,24 +412,34 @@ async function paintSides(ev, sides = ["front", "back"]) {
 
 const Evidence = {
   async create(data) {
-    const scene = canvas.scene;
-    if (!scene) return ui.notifications.warn("Open a scene first.");
+    if (!canvas.scene && !data.locker) return ui.notifications.warn("Open a scene first.");
     const ev = { id: foundry.utils.randomID(), type: data.type, title: data.title, image: data.image,
       front: data.front, back: data.back, notes: "", flipped: false, links: [] };
     Object.assign(ev, await paintSides(ev));
+    if (data.locker) {
+      await Locker.put({ ev, filed: Date.now() });
+      return ui.notifications.info(`Filed "${ev.title || TYPES[ev.type].label}" in the Evidence Locker.`);
+    }
+    await this.place(ev, { hidden: !!data.hidden });
+  },
+
+  /** Puts already-painted evidence on the current scene, centred on the view. */
+  async place(ev, { hidden = false, width, height, rotation } = {}) {
+    const scene = canvas.scene;
+    if (!scene) return ui.notifications.warn("Open a scene first.");
     const [w, h] = TYPES[ev.type].size;
     const k = (canvas.dimensions.size / 100) * 0.5;
+    width ??= Math.round((w + PAD * 2) * k);
+    height ??= Math.round((h + PAD * 2) * k);
     const { x, y } = canvas.stage.pivot;
-    const tiles = scene.tiles.contents;
     await scene.createEmbeddedDocuments("Tile", [{
-      texture: { src: ev.frontSrc },
-      width: Math.round((w + PAD * 2) * k),
-      height: Math.round((h + PAD * 2) * k),
-      x: Math.round(x - ((w + PAD * 2) * k) / 2),
-      y: Math.round(y - ((h + PAD * 2) * k) / 2),
-      rotation: Math.round((Math.random() - 0.5) * 12),
-      sort: Math.max(0, ...tiles.map(t => t.sort ?? 0)) + 1,
-      hidden: !!data.hidden,
+      texture: { src: ev.flipped ? ev.backSrc : ev.frontSrc },
+      width, height,
+      x: Math.round(x - width / 2),
+      y: Math.round(y - height / 2),
+      rotation: rotation ?? Math.round((Math.random() - 0.5) * 12),
+      sort: Math.max(0, ...scene.tiles.map(t => t.sort ?? 0)) + 1,
+      hidden,
       flags: { [MOD]: { evidence: ev } }
     }]);
   },
@@ -438,6 +448,14 @@ const Evidence = {
     const ev = { ...getEvidence(tile), ...data };
     Object.assign(ev, await paintSides(ev));
     await tile.update({ hidden: !!data.hidden, "texture.src": ev.flipped ? ev.backSrc : ev.frontSrc, [`flags.${MOD}.evidence`]: ev });
+  },
+
+  /** Moves a tile into the locker: its painted images, text and notes are kept, the tile is removed. */
+  async fileAway(tile) {
+    const ev = getEvidence(tile);
+    await Locker.put({ ev, width: tile.width, height: tile.height, rotation: tile.rotation, filed: Date.now() });
+    await tile.delete();
+    ui.notifications.info(`Filed "${ev.title || TYPES[ev.type].label}" in the Evidence Locker.`);
   },
 
   async flip(tile) {
@@ -540,6 +558,7 @@ class EvidenceEditor extends ApplicationV2 {
         <p class="hint">Email: start with From:, To: and Date: lines, and the title is the subject. Texts: one message per line, starting with &gt; for ones the phone's owner sent, and the title is the contact.</p></div>
       <div class="form-group stacked"><label>Back</label><textarea name="back" rows="4">${esc(ev.back)}</textarea></div>
       <div class="form-group"><label>Hidden from players</label><input type="checkbox" name="hidden" ${this.tile?.hidden ? "checked" : ""}></div>
+      ${this.tile ? "" : `<div class="form-group"><label>Straight to the locker</label><input type="checkbox" name="locker"><p class="hint">Prep it now, place it in a later session.</p></div>`}
       <footer class="form-footer"><button type="submit"><i class="fa-solid fa-thumbtack"></i> ${this.tile ? "Update" : "Place on scene"}</button></footer>`;
   }
 
@@ -561,6 +580,72 @@ class EvidenceEditor extends ApplicationV2 {
   }
 }
 
+/** Evidence filed off the table, kept in a world setting so it survives between sessions and scenes. */
+const Locker = {
+  all() {
+    return game.settings.get(MOD, "locker") ?? {};
+  },
+  put(entry) {
+    return game.settings.set(MOD, "locker", { ...this.all(), [entry.ev.id]: entry });
+  },
+  remove(id) {
+    const { [id]: _, ...rest } = this.all();
+    return game.settings.set(MOD, "locker", rest);
+  },
+  async takeOut(id) {
+    const entry = this.all()[id];
+    if (!entry || !canvas.scene) return ui.notifications.warn("Open a scene first.");
+    await Evidence.place(entry.ev, { hidden: true, width: entry.width, height: entry.height, rotation: entry.rotation });
+    await this.remove(id);
+    ui.notifications.info("Placed hidden. Reveal it when the players find it.");
+  }
+};
+
+class LockerApp extends ApplicationV2 {
+  static DEFAULT_OPTIONS = {
+    id: "stl-locker",
+    classes: ["stl-casefile", "stl-locker"],
+    window: { title: "Evidence Locker", icon: "fa-solid fa-box-archive", resizable: true },
+    position: { width: 560, height: 600 },
+    actions: { place: LockerApp.onPlace, discard: LockerApp.onDiscard }
+  };
+
+  async _renderHTML() {
+    const entries = Object.values(Locker.all()).sort((a, b) => b.filed - a.filed);
+    const cards = entries.map(({ ev }) => `
+      <li data-id="${ev.id}" data-search="${esc(`${ev.title} ${ev.front} ${ev.back} ${ev.notes} ${TYPES[ev.type]?.label}`.toLowerCase())}">
+        <img src="${esc(ev.frontSrc)}" alt="">
+        <div><strong>${esc(ev.title || "Untitled")}</strong><small>${TYPES[ev.type]?.label ?? ev.type}</small></div>
+        <button type="button" data-action="place" data-tooltip="Place on this scene (hidden)"><i class="fa-solid fa-thumbtack"></i></button>
+        <button type="button" data-action="discard" data-tooltip="Destroy for good"><i class="fa-solid fa-fire"></i></button>
+      </li>`).join("");
+    return `
+      <input type="search" placeholder="Search the locker…">
+      ${entries.length ? `<ul>${cards}</ul>` : `<p class="empty">Nothing filed yet. Use "File away" on a piece of evidence to store it here.</p>`}`;
+  }
+
+  _replaceHTML(result, content) {
+    content.innerHTML = result;
+    content.querySelector("input[type=search]").addEventListener("input", ev => {
+      const q = ev.target.value.trim().toLowerCase();
+      for (const li of content.querySelectorAll("li")) li.hidden = !!q && !li.dataset.search.includes(q);
+    });
+  }
+
+  static onPlace(event, target) {
+    Locker.takeOut(target.closest("li").dataset.id);
+  }
+
+  static async onDiscard(event, target) {
+    const id = target.closest("li").dataset.id;
+    const ok = await foundry.applications.api.DialogV2.confirm({
+      window: { title: "Destroy evidence" },
+      content: `<p>Destroy "${esc(Locker.all()[id]?.ev.title || "this evidence")}" for good?</p>`
+    });
+    if (ok) Locker.remove(id);
+  }
+}
+
 /** Close-up of one evidence object, with shared notes anyone can write. */
 class EvidenceSheet extends ApplicationV2 {
   static instances = new Map();
@@ -573,7 +658,8 @@ class EvidenceSheet extends ApplicationV2 {
       flip: EvidenceSheet.onFlip,
       save: EvidenceSheet.onSave,
       edit: EvidenceSheet.onEdit,
-      reveal: EvidenceSheet.onReveal
+      reveal: EvidenceSheet.onReveal,
+      file: EvidenceSheet.onFile
     }
   };
 
@@ -609,7 +695,8 @@ class EvidenceSheet extends ApplicationV2 {
         <button type="button" data-action="flip"><i class="fa-solid fa-rotate"></i> Flip</button>
         <button type="button" data-action="save"><i class="fa-solid fa-pen-nib"></i> Save notes</button>
         ${gm ? `<button type="button" data-action="edit"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
-        <button type="button" data-action="reveal"><i class="fa-solid ${this.tile.hidden ? "fa-eye" : "fa-eye-slash"}"></i> ${this.tile.hidden ? "Reveal" : "Hide"}</button>` : ""}
+        <button type="button" data-action="reveal"><i class="fa-solid ${this.tile.hidden ? "fa-eye" : "fa-eye-slash"}"></i> ${this.tile.hidden ? "Reveal" : "Hide"}</button>
+        <button type="button" data-action="file"><i class="fa-solid fa-box-archive"></i> File away</button>` : ""}
       </footer>`;
   }
 
@@ -639,6 +726,10 @@ class EvidenceSheet extends ApplicationV2 {
 
   static onReveal() {
     this.tile.update({ hidden: !this.tile.hidden });
+  }
+
+  static onFile() {
+    Evidence.fileAway(this.tile);
   }
 }
 
@@ -728,7 +819,9 @@ Hooks.once("init", () => {
   game.settings.register(MOD, "tracker", { name: "Left-edge initiative tracker", hint: "Show the casefile initiative tracker on the left side of the screen.", scope: "client", config: true, type: Boolean, default: true, onChange: redraw });
   game.settings.register(MOD, "trackerLeft", { name: "Initiative tracker: left offset (px)", hint: "Distance from the left edge, to clear the scene controls.", scope: "client", config: true, type: Number, default: 80, onChange: redraw });
   game.settings.register(MOD, "trackerBottom", { name: "Initiative tracker: bottom offset (px)", hint: "Distance from the bottom edge, to clear the players list.", scope: "client", config: true, type: Number, default: 120, onChange: redraw });
-  globalThis.STLCasefiles = { Evidence, EvidenceEditor, EvidenceSheet, Tracker, TYPES };
+  game.settings.register(MOD, "locker", { scope: "world", config: false, type: Object, default: {},
+    onChange: () => foundry.applications.instances?.get("stl-locker")?.render() });
+  globalThis.STLCasefiles = { Evidence, EvidenceEditor, EvidenceSheet, Locker, LockerApp, Tracker, TYPES };
 });
 
 Hooks.once("ready", () => {
@@ -773,7 +866,7 @@ Hooks.on("deleteTile", tile => EvidenceSheet.instances.get(tile.uuid)?.close());
 
 Hooks.on("getSceneControlButtons", controls => {
   if (!game.user.isGM) return;
-  const tool = {
+  const tools = [{
     name: "stl-evidence",
     title: "New Evidence",
     icon: "fa-solid fa-magnifying-glass",
@@ -781,11 +874,21 @@ Hooks.on("getSceneControlButtons", controls => {
     order: 100,
     visible: true,
     onChange: () => new EvidenceEditor().render({ force: true })
-  };
-  if (Array.isArray(controls)) {
-    for (const name of ["tiles", "token"]) controls.find(c => c.name === name)?.tools.push({ ...tool, onClick: tool.onChange });
-  } else {
-    for (const name of ["tiles", "tokens"]) if (controls[name]) controls[name].tools[tool.name] = tool;
+  }, {
+    name: "stl-locker",
+    title: "Evidence Locker",
+    icon: "fa-solid fa-box-archive",
+    button: true,
+    order: 101,
+    visible: true,
+    onChange: () => (foundry.applications.instances?.get("stl-locker") ?? new LockerApp()).render({ force: true })
+  }];
+  for (const tool of tools) {
+    if (Array.isArray(controls)) {
+      for (const name of ["tiles", "token"]) controls.find(c => c.name === name)?.tools.push({ ...tool, onClick: tool.onChange });
+    } else {
+      for (const name of ["tiles", "tokens"]) if (controls[name]) controls[name].tools[tool.name] = tool;
+    }
   }
 });
 
@@ -795,7 +898,7 @@ Hooks.on("renderTileHUD", (hud, html) => {
   if (!getEvidence(tile)) return;
   const root = html instanceof HTMLElement ? html : html[0];
   const col = root.querySelector(".col.right") ?? root;
-  for (const [icon, tip, fn] of [["fa-rotate", "Flip evidence", () => Evidence.request("flip", tile)], ["fa-magnifying-glass", "Open evidence", () => EvidenceSheet.open(tile)]]) {
+  for (const [icon, tip, fn] of [["fa-rotate", "Flip evidence", () => Evidence.request("flip", tile)], ["fa-magnifying-glass", "Open evidence", () => EvidenceSheet.open(tile)], ["fa-box-archive", "File away in the locker", () => Evidence.fileAway(tile)]]) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "control-icon";
