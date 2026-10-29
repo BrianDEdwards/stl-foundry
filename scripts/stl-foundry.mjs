@@ -716,7 +716,8 @@ class EvidenceSheet extends ApplicationV2 {
       save: EvidenceSheet.onSave,
       edit: EvidenceSheet.onEdit,
       reveal: EvidenceSheet.onReveal,
-      file: EvidenceSheet.onFile
+      file: EvidenceSheet.onFile,
+      photo: EvidenceSheet.onPhoto
     }
   };
 
@@ -751,6 +752,7 @@ class EvidenceSheet extends ApplicationV2 {
       <footer class="stl-ev-buttons">
         <button type="button" data-action="flip"><i class="fa-solid fa-rotate"></i> Flip</button>
         <button type="button" data-action="save"><i class="fa-solid fa-pen-nib"></i> Save notes</button>
+        ${ev.image ? `<button type="button" data-action="photo"><i class="fa-solid fa-image"></i> Full image</button>` : ""}
         ${gm ? `<button type="button" data-action="edit"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
         <button type="button" data-action="reveal"><i class="fa-solid ${this.tile.hidden ? "fa-eye" : "fa-eye-slash"}"></i> ${this.tile.hidden ? "Reveal" : "Hide"}</button>
         <button type="button" data-action="file"><i class="fa-solid fa-box-archive"></i> File away</button>` : ""}
@@ -783,6 +785,15 @@ class EvidenceSheet extends ApplicationV2 {
 
   static onReveal() {
     this.tile.update({ hidden: !this.tile.hidden });
+  }
+
+  /** The uncropped source image, in Foundry's own image viewer (the GM can share it from there). */
+  static onPhoto() {
+    const ev = getEvidence(this.tile);
+    const Popout = foundry.applications.apps?.ImagePopout ?? globalThis.ImagePopout;
+    const title = ev.title || TYPES[ev.type].label;
+    if (foundry.applications.apps?.ImagePopout) new Popout({ src: ev.image, window: { title } }).render({ force: true });
+    else new Popout(ev.image, { title }).render(true);
   }
 
   static onFile() {

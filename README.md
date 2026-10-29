@@ -16,7 +16,7 @@ https://github.com/BrianDEdwards/stl-foundry/releases/latest/download/module.jso
 - **Emails:** start the Front text with `From:`, `To:` and `Date:` lines; the title is the subject.
 - **Text messages:** one message per line in Front, starting with `>` for messages the phone's owner sent; the title is the contact. The back is the phone case with a sticky note.
 - **Flip:** anyone double-clicks a piece of evidence to flip it, on any layer.
-- **Open:** shift + double-click opens a close-up window with Flip and a shared Notes box. Notes are written onto the back of the object in blue ink, so everyone sees them when it's flipped.
+- **Open:** shift + double-click opens a close-up window with Flip, Full image (the uncropped photo or cover) and a shared Notes box. Notes are written onto the back of the object in blue ink, so everyone sees them when it's flipped.
 - **GM extras:** the window has Edit and Hide/Reveal. The tile HUD (right-click on the Tiles layer) has Flip and Open buttons. Double-click no longer opens the core tile settings for evidence; use Edit instead.
 - **Evidence Locker:** the box button next to New Evidence. *File away* (in the close-up window or the tile HUD) takes a piece off the table and stores it with its text, images and players' notes. In the locker, the pin places it back on whatever scene you're viewing, hidden until you reveal it; the flame destroys it for good. Tick *Straight to the locker* when creating evidence to prep it ahead of time.
 - Evidence is a normal Tile, so move, scale, rotate, lock and delete it as usual. Images are painted in the browser and saved to `Data/stl-evidence/`.
