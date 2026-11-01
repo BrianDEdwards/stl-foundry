@@ -27,6 +27,7 @@ const FONT = {
 const NOTE_INK = "#1f2d5c";
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const TILE_ANCHORED = () => "anchorX" in (CONFIG.Tile.documentClass.schema?.fields ?? {});
 const getEvidence = tile => tile?.getFlag?.(MOD, "evidence") ?? tile?.flags?.[MOD]?.evidence;
 const FilePickerImpl = () => foundry.applications?.apps?.FilePicker?.implementation ?? globalThis.FilePicker;
 
@@ -435,8 +436,9 @@ const Evidence = {
     await scene.createEmbeddedDocuments("Tile", [{
       texture: { src: ev.flipped ? ev.backSrc : ev.frontSrc },
       width, height,
-      x: Math.round(x - width / 2),
-      y: Math.round(y - height / 2),
+      // v14: x/y is the anchor, set to the centre. Earlier versions: x/y is the top-left corner.
+      ...(TILE_ANCHORED() ? { x: Math.round(x), y: Math.round(y), anchorX: 0.5, anchorY: 0.5 }
+        : { x: Math.round(x - width / 2), y: Math.round(y - height / 2) }),
       rotation: rotation ?? Math.round((Math.random() - 0.5) * 12),
       sort: Math.max(0, ...scene.tiles.map(t => t.sort ?? 0)) + 1,
       hidden,
@@ -513,11 +515,16 @@ const Evidence = {
   at(point) {
     const hits = (canvas.scene?.tiles ?? []).filter(t => {
       if (!getEvidence(t) || (t.hidden && !game.user.isGM) || t.object?.visible === false) return false;
-      const cx = t.x + t.width / 2, cy = t.y + t.height / 2;
+      // v14 tiles have an anchor: x/y is the anchor point (centre by default) and the tile rotates around it.
+      // Before v14 x/y is the top-left corner and the tile rotates around its centre.
+      const w = Math.abs(t.width), h = Math.abs(t.height);
+      const hasAnchor = typeof t.anchorX === "number";
+      const ax = hasAnchor ? t.anchorX : 0.5, ay = hasAnchor ? t.anchorY : 0.5;
+      const px = hasAnchor ? t.x : t.x + w / 2, py = hasAnchor ? t.y : t.y + h / 2;
       const a = -Math.toRadians(t.rotation ?? 0);
-      const dx = point.x - cx, dy = point.y - cy;
+      const dx = point.x - px, dy = point.y - py;
       const lx = dx * Math.cos(a) - dy * Math.sin(a), ly = dx * Math.sin(a) + dy * Math.cos(a);
-      return Math.abs(lx) <= Math.abs(t.width) / 2 && Math.abs(ly) <= Math.abs(t.height) / 2;
+      return lx >= -ax * w && lx <= (1 - ax) * w && ly >= -ay * h && ly <= (1 - ay) * h;
     });
     return hits.sort((a, b) => (b.elevation ?? 0) - (a.elevation ?? 0) || (b.sort ?? 0) - (a.sort ?? 0))[0];
   }
