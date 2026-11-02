@@ -29,3 +29,9 @@ A strip on the left edge that mirrors the core combat tracker. The current turn 
 ## Releasing
 
 Bump `version` in `module.json` and push to the default branch. The workflow builds `module.zip` and publishes a GitHub release, and Foundry picks up the update.
+
+## Testing
+
+`node test/smoke.mjs` boots a real Foundry server in Docker, creates a scene, places every evidence type, double-clicks them (centre, corners, just outside, repeated), checks the flip animation, the locker and the tracker, and saves screenshots to `test/shots/`. Add `--keep` to leave Foundry running on port 30000.
+
+It uses a **private** image built by the *Foundry test image* workflow (Actions tab → Run workflow, paste a timed Node.js download link from foundryvtt.com). That workflow needs the repo secret `FOUNDRY_LICENSE_KEY`; the test needs `GHCR_TOKEN`, a GitHub token with only `read:packages`. Re-run the workflow to move to a new Foundry version. Don't run tests while hosting a game: the license allows one server in use at a time.
