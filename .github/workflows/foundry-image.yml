@@ -1,0 +1,59 @@
+name: Foundry test image
+
+# Builds a PRIVATE Docker image with Foundry VTT and a tiny test world, used by test/smoke.mjs.
+# Run it from the Actions tab: paste a timed "Node.js" download link from foundryvtt.com (Purchased Licenses page).
+# Needs the repo secret FOUNDRY_LICENSE_KEY. Foundry's license forbids redistribution: keep the package private.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Timed Foundry download link (Node.js build), valid for a few minutes
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Foundry
+        env:
+          URL: ${{ inputs.url }}
+        run: |
+          echo "::add-mask::$URL"
+          curl -fsSL -o foundry.zip "$URL"
+          mkdir -p ctx/app-raw && unzip -q foundry.zip -d ctx/app-raw
+          MAIN=$(find ctx/app-raw -maxdepth 4 -name main.js -not -path '*/node_modules/*' | head -1)
+          mv "$(dirname "$MAIN")" ctx/app
+          VERSION=$(jq -r '.release | "\(.generation).\(.build)"' ctx/app/package.json)
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Foundry $VERSION"
+      - name: Test world and system
+        env:
+          KEY: ${{ secrets.FOUNDRY_LICENSE_KEY }}
+        run: |
+          D=ctx/data
+          mkdir -p $D/Config $D/Data/systems/casefiles-test $D/Data/worlds/casefiles-test $D/Data/modules
+          jq -n --arg k "$KEY" '{license: $k}' > $D/Config/license.json
+          jq -n '{port: 30000, upnp: false, telemetry: false, noUpdate: true}' > $D/Config/options.json
+          jq -n '{id: "casefiles-test", title: "Casefiles Test", version: "1.0.0",
+            compatibility: {minimum: "13", verified: "14"},
+            documentTypes: {Actor: {character: {}}, Item: {item: {}}}}' > $D/Data/systems/casefiles-test/system.json
+          jq -n --arg v "$VERSION" '{id: "casefiles-test", title: "Casefiles Test", system: "casefiles-test",
+            coreVersion: $v, version: "1.0.0", compatibility: {minimum: "13", verified: "14"}}' > $D/Data/worlds/casefiles-test/world.json
+      - name: Build and push
+        run: |
+          IMAGE=ghcr.io/$(echo "${{ github.repository_owner }}" | tr A-Z a-z)/foundry-casefiles
+          cat > ctx/Dockerfile <<'DOCKER'
+          FROM node:22-slim
+          COPY app /opt/foundry
+          COPY data /data
+          EXPOSE 30000
+          CMD ["node", "/opt/foundry/main.js", "--dataPath=/data", "--port=30000", "--world=casefiles-test", "--noupdate"]
+          DOCKER
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build -t "$IMAGE:$VERSION" -t "$IMAGE:latest" ctx
+          docker push "$IMAGE:$VERSION" && docker push "$IMAGE:latest"
+          echo "Pushed $IMAGE:$VERSION (check it is Private under your GitHub profile > Packages)" >> "$GITHUB_STEP_SUMMARY"
