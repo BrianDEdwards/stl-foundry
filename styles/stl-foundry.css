@@ -63,6 +63,25 @@
 .stl-ev-buttons button:hover,
 .stl-editor .form-footer button:hover { background: var(--stl-blood); box-shadow: 0 0 8px var(--stl-ember); }
 
+/* Per-type editor fields: repeating text-message rows and email blocks */
+.stl-editor [hidden] { display: none !important; }
+.stl-editor .form-group.stacked { flex-direction: column; align-items: stretch; }
+.stl-editor .form-group.stacked textarea { width: 100%; }
+.stl-editor .stl-rows { display: flex; flex-direction: column; gap: 0.3rem; max-height: 45vh; overflow-y: auto; }
+.stl-editor .stl-msg { display: flex; align-items: center; gap: 0.3rem; }
+.stl-editor .stl-msg input { flex: 1; }
+.stl-editor .stl-who { flex: 0 0 4rem; text-align: center; font-size: 0.8rem; line-height: 1.6rem; border-radius: 0.8rem; }
+.stl-editor button.stl-who.me { background: #2f6fe0; color: #fff; }
+.stl-editor button.stl-who.them { background: #3a3c43; color: #eee; }
+.stl-editor .stl-who.time { color: #8a8d96; }
+.stl-editor .stl-row-btns { display: flex; gap: 2px; }
+.stl-editor .stl-row-btns button { flex: 0 0 1.6rem; width: 1.6rem; height: 1.6rem; padding: 0; line-height: 1; font-size: 0.7rem; }
+.stl-editor .stl-mail { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem; margin: 0; padding: 0.4rem; }
+.stl-editor .stl-mail label { display: flex; flex-direction: column; font-size: 0.75rem; }
+.stl-editor .stl-mail textarea { grid-column: 1 / -1; }
+.stl-editor .stl-mail .stl-row-btns { position: absolute; top: -0.7rem; right: 0.4rem; }
+.stl-editor .stl-add { display: flex; gap: 0.3rem; margin-top: 0.3rem; }
+
 /* ---------- Initiative tracker ---------- */
 
 #stl-initiative {

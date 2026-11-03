@@ -28,7 +28,49 @@ const NOTE_INK = "#1f2d5c";
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const TILE_ANCHORED = () => "anchorX" in (CONFIG.Tile.documentClass.schema?.fields ?? {});
-const getEvidence = tile => tile?.getFlag?.(MOD, "evidence") ?? tile?.flags?.[MOD]?.evidence;
+/* Structured content for texts and email. Older evidence only has `front` text, so these parse it as a fallback,
+   and `front` is kept as the plain-text version (the evidence sheet and locker search read it). */
+
+/** Text messages: [{ who: "me" | "them" | "time", text }]. In old `front` text, ">" lines were sent by the owner. */
+function textsOf(ev) {
+  if (Array.isArray(ev.msgs)) return ev.msgs;
+  return String(ev.front ?? "").split("\n").filter(l => l.trim())
+    .map(l => (l.startsWith(">") ? { who: "me", text: l.replace(/^>\s*/, "") } : { who: "them", text: l.trim() }));
+}
+
+const MAIL_KEYS = ["from", "to", "cc", "date"];
+
+/** Email chain, oldest first: [{ from, to, cc, date, body }]. Old `front` text had From:/To:/Date: lines on top. */
+function mailsOf(ev) {
+  if (Array.isArray(ev.mails)) return ev.mails;
+  const lines = String(ev.front ?? "").split("\n");
+  const mail = { from: "", to: "", cc: "", date: "", body: "" };
+  while (lines.length && /^(from|to|cc|date|sent|subject):/i.test(lines[0])) {
+    const [k, ...v] = lines.shift().split(":");
+    const key = k.trim().toLowerCase() === "sent" ? "date" : k.trim().toLowerCase();
+    if (key in mail) mail[key] = v.join(":").trim();
+  }
+  mail.body = lines.join("\n").trim();
+  return [mail];
+}
+
+function frontText(type, ev) {
+  if (type === "texts") return ev.msgs.map(m => (m.who === "me" ? `> ${m.text}` : m.who === "time" ? `[${m.text}]` : m.text)).join("\n");
+  if (type === "email") return [...ev.mails].reverse().map(m => [
+    ...MAIL_KEYS.filter(k => m[k]).map(k => `${k[0].toUpperCase()}${k.slice(1)}: ${m[k]}`), "", m.body
+  ].join("\n")).join("\n\n----\n\n");
+  return ev.front;
+}
+
+/** Fills in the structured fields from old text (or vice versa) so both stay in step. */
+function normalize(ev) {
+  if (ev.type === "texts") ev.msgs = textsOf(ev);
+  if (ev.type === "email") ev.mails = mailsOf(ev);
+  ev.front = frontText(ev.type, ev);
+  return ev;
+}
+
+const getEvidence = tile =>tile?.getFlag?.(MOD, "evidence") ?? tile?.flags?.[MOD]?.evidence;
 const FilePickerImpl = () => foundry.applications?.apps?.FilePicker?.implementation ?? globalThis.FilePicker;
 
 /* -------------------------------------------- */
@@ -172,6 +214,16 @@ const PAINTERS = {
       v.addColorStop(1, "rgba(0,0,0,0.55)");
       ctx.fillStyle = v;
       ctx.fillRect(24, 24, s, s);
+      if (ev.date) { // Orange date stamp burned into the corner of the photo
+        ctx.save();
+        ctx.font = `bold 20px ${FONT.type}`;
+        ctx.textAlign = "right";
+        ctx.shadowColor = "rgba(255,120,30,0.8)";
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = "#ff9a3c";
+        ctx.fillText(ev.date, 24 + s - 14, 24 + s - 14);
+        ctx.restore();
+      }
       ctx.font = `700 40px ${FONT.hand}`;
       ctx.fillStyle = "#1d1b19";
       wrap(ctx, ev.title, w / 2, s + 24 + 58, w - 40, 40, h - 10, "center");
@@ -270,27 +322,38 @@ const PAINTERS = {
     if (side === "back") {
       return writeBody(ctx, ev, side, { x: 32, y: 50, maxW: w - 64, maxY: h - 20, font: `500 26px ${FONT.hand}`, lh: 30, ink: "#26221e" });
     }
-    const lines = String(ev.front ?? "").split("\n");
-    const header = [];
-    while (lines.length && /^(from|to|cc|date|sent|subject):/i.test(lines[0])) header.push(lines.shift());
+    // Printed like a real chain: subject once, then the newest message first and older ones quoted below it.
+    const mails = [...mailsOf(ev)].reverse();
+    const small = mails.length > 1;
     let y = 44;
     ctx.fillStyle = "#222";
     ctx.font = `bold 20px ${FONT.sans}`;
     y = wrap(ctx, ev.title, 30, y, w - 60, 24, 120) + 6;
-    ctx.font = `14px ${FONT.sans}`;
-    for (const line of header) {
-      const [k, ...v] = line.split(":");
-      ctx.font = `bold 14px ${FONT.sans}`;
-      ctx.fillText(`${k}:`, 30, y);
-      ctx.font = `14px ${FONT.sans}`;
-      ctx.fillText(v.join(":").trim(), 100, y);
-      y += 20;
-    }
-    ctx.fillStyle = "#999";
-    ctx.fillRect(30, y - 6, w - 60, 1);
-    ctx.font = `15px ${FONT.sans}`;
-    ctx.fillStyle = "#222";
-    wrap(ctx, lines.join("\n").trim(), 30, y + 20, w - 60, 21, h - 30);
+    mails.forEach((m, i) => {
+      if (y > h - 40) return;
+      if (i) {
+        ctx.fillStyle = "#777";
+        ctx.font = `12px ${FONT.sans}`;
+        ctx.textAlign = "left";
+        ctx.fillText("-------- Original Message --------", 30, y + 4);
+        y += 24;
+      }
+      ctx.fillStyle = "#222";
+      for (const k of MAIL_KEYS) {
+        if (!m[k]) continue;
+        ctx.textAlign = "left";
+        ctx.font = `bold 13px ${FONT.sans}`;
+        ctx.fillText(`${k[0].toUpperCase()}${k.slice(1)}:`, 30, y);
+        ctx.font = `13px ${FONT.sans}`;
+        wrap(ctx, m[k], 84, y, w - 114, 18, y);
+        y += 18;
+      }
+      ctx.fillStyle = "#999";
+      ctx.fillRect(30, y - 6, w - 60, 1);
+      ctx.font = `${small ? 14 : 15}px ${FONT.sans}`;
+      ctx.fillStyle = i ? "#444" : "#222";
+      y = wrap(ctx, m.body, 30, y + 16, w - 60, small ? 19 : 21, h - 30) + 6;
+    });
   },
 
   async texts(ctx, ev, side, w, h, r) {
@@ -344,13 +407,21 @@ const PAINTERS = {
       out.push(line);
       return out;
     };
-    const msgs = String(ev.front ?? "").split("\n").filter(l => l.trim()).map(l => {
-      const mine = l.startsWith(">");
-      return { mine, lines: measure(l.replace(/^>\s*/, "")) };
-    });
+    const msgs = textsOf(ev).filter(m => m.text?.trim()).map(m => ({ ...m, mine: m.who === "me", lines: measure(m.text) }));
     // Stack from the bottom up like a real thread, so the latest message is always visible
     let y = sy + sh - 18;
     for (const m of msgs.reverse()) {
+      if (m.who === "time") {
+        y -= 16;
+        if (y < sy + 76) break;
+        ctx.fillStyle = "#8a8d96";
+        ctx.font = `11px ${FONT.sans}`;
+        ctx.textAlign = "center";
+        ctx.fillText(m.text, w / 2, y + 8);
+        ctx.font = `15px ${FONT.sans}`;
+        y -= 10;
+        continue;
+      }
       const bh = m.lines.length * 19 + 14;
       const bw = Math.min(bubbleW, Math.max(...m.lines.map(l => ctx.measureText(l).width)) + 24);
       y -= bh;
@@ -414,8 +485,9 @@ async function paintSides(ev, sides = ["front", "back"]) {
 const Evidence = {
   async create(data) {
     if (!canvas.scene && !data.locker) return ui.notifications.warn("Open a scene first.");
-    const ev = { id: foundry.utils.randomID(), type: data.type, title: data.title, image: data.image,
-      front: data.front, back: data.back, notes: "", flipped: false, links: [] };
+    const ev = { id: foundry.utils.randomID(), type: data.type, title: data.title, image: data.image, date: data.date,
+      front: data.front, back: data.back, msgs: data.msgs, mails: data.mails, notes: "", flipped: false, links: [] };
+    normalize(ev);
     Object.assign(ev, await paintSides(ev));
     if (data.locker) {
       await Locker.put({ ev, filed: Date.now() });
@@ -447,7 +519,7 @@ const Evidence = {
   },
 
   async edit(tile, data) {
-    const ev = { ...getEvidence(tile), ...data };
+    const ev = normalize({ ...getEvidence(tile), ...data });
     Object.assign(ev, await paintSides(ev));
     await tile.update({ hidden: !!data.hidden, "texture.src": ev.flipped ? ev.backSrc : ev.frontSrc, [`flags.${MOD}.evidence`]: ev });
   },
@@ -592,14 +664,57 @@ const FlipAnim = {
 const { ApplicationV2 } = foundry.applications.api;
 
 /** Create or edit an evidence object (GM). */
+/* Rows for the texts and email editors. Their inputs have no `name`, so they're collected by hand on submit. */
+const ROW_BTNS = `<span class="stl-row-btns">
+  <button type="button" data-action="rowUp" data-tooltip="Move up"><i class="fa-solid fa-arrow-up"></i></button>
+  <button type="button" data-action="rowDown" data-tooltip="Move down"><i class="fa-solid fa-arrow-down"></i></button>
+  <button type="button" data-action="rowDel" data-tooltip="Delete"><i class="fa-solid fa-trash"></i></button></span>`;
+const WHO_LABEL = { me: "Me", them: "Them" };
+
+function textRow(m) {
+  if (m.who === "time") return `<div class="stl-row stl-msg" data-who="time">
+    <span class="stl-who time"><i class="fa-regular fa-clock"></i></span>
+    <input type="text" data-k="text" value="${esc(m.text)}" placeholder="Tue 11:42 PM">${ROW_BTNS}</div>`;
+  return `<div class="stl-row stl-msg" data-who="${m.who}">
+    <button type="button" class="stl-who ${m.who}" data-action="who" data-tooltip="Who sent it (click to switch)">${WHO_LABEL[m.who]}</button>
+    <input type="text" data-k="text" value="${esc(m.text)}" placeholder="Message">${ROW_BTNS}</div>`;
+}
+
+function mailBlock(m) {
+  const f = (k, label, ph = "") => `<label>${label}<input type="text" data-k="${k}" value="${esc(m[k])}" placeholder="${ph}"></label>`;
+  return `<fieldset class="stl-row stl-mail"><legend></legend>${ROW_BTNS}
+    ${f("from", "From", "j.doe@example.com")}${f("to", "To")}${f("cc", "Cc", "optional")}${f("date", "Date", "Mon, Oct 12, 1983 9:14 PM")}
+    <textarea data-k="body" rows="4" placeholder="Message body">${esc(m.body)}</textarea></fieldset>`;
+}
+
+/** Per-type labels; a field without an entry for a type is hidden for it. */
+const FIELDS = {
+  title: { polaroid: "Caption", lined: "Heading", plain: "Heading", book: "Title", email: "Subject", texts: "Contact name" },
+  image: { polaroid: "Photo", book: "Cover image" },
+  date: { polaroid: "Date stamp" },
+  front: { lined: "Front", plain: "Front", book: "Author / subtitle" },
+  texts: { texts: "Messages" },
+  email: { email: "Messages (oldest first; prints newest first)" },
+  back: { polaroid: "Back (handwriting)", lined: "Back", plain: "Back", book: "Inscription / blurb", email: "Back (handwritten notes)", texts: "Back (sticky note)" }
+};
+
 class EvidenceEditor extends ApplicationV2 {
   static DEFAULT_OPTIONS = {
     tag: "form",
     classes: ["stl-casefile", "stl-editor"],
     window: { title: "New Evidence", icon: "fa-solid fa-magnifying-glass" },
-    position: { width: 440, height: "auto" },
+    position: { width: 480, height: "auto" },
     form: { handler: EvidenceEditor.onSubmit, closeOnSubmit: true },
-    actions: { pick: EvidenceEditor.onPick }
+    actions: {
+      pick: EvidenceEditor.onPick,
+      who: EvidenceEditor.onWho,
+      addText: (e, t) => EvidenceEditor.addRow(t, textRow({ who: "them", text: "" })),
+      addTime: (e, t) => EvidenceEditor.addRow(t, textRow({ who: "time", text: "" })),
+      addMail: (e, t) => EvidenceEditor.addRow(t, mailBlock({})),
+      rowUp: (e, t) => { const r = t.closest(".stl-row"); r.previousElementSibling?.before(r); EvidenceEditor.number(r.parentElement); },
+      rowDown: (e, t) => { const r = t.closest(".stl-row"); r.nextElementSibling?.after(r); EvidenceEditor.number(r.parentElement); },
+      rowDel: (e, t) => { const list = t.closest(".stl-rows"); t.closest(".stl-row").remove(); EvidenceEditor.number(list); }
+    }
   };
 
   constructor(tile, options = {}) {
@@ -617,16 +732,26 @@ class EvidenceEditor extends ApplicationV2 {
       image: canvas.tokens?.controlled[0]?.actor?.img ?? canvas.tokens?.controlled[0]?.document.texture.src ?? ""
     };
     const types = Object.entries(TYPES).map(([k, t]) => `<option value="${k}" ${k === ev.type ? "selected" : ""}>${t.label}</option>`).join("");
+    const msgs = ev.type === "texts" ? textsOf(ev) : [];
+    const mails = ev.type === "email" ? mailsOf(ev) : [];
     return `
       <div class="form-group"><label>Type</label><select name="type">${types}</select></div>
-      <div class="form-group"><label>Title</label><input type="text" name="title" value="${esc(ev.title)}" placeholder="Caption, heading or book title"></div>
-      <div class="form-group"><label>Image</label><div class="form-fields">
-        <input type="text" name="image" value="${esc(ev.image)}" placeholder="Polaroid photo or book cover">
+      <div class="form-group" data-field="title"><label></label><input type="text" name="title" value="${esc(ev.title)}"></div>
+      <div class="form-group" data-field="image"><label></label><div class="form-fields">
+        <input type="text" name="image" value="${esc(ev.image)}">
         <button type="button" data-action="pick" data-tooltip="Browse"><i class="fa-solid fa-file-image"></i></button>
       </div></div>
-      <div class="form-group stacked"><label>Front</label><textarea name="front" rows="4">${esc(ev.front)}</textarea>
-        <p class="hint">Email: start with From:, To: and Date: lines, and the title is the subject. Texts: one message per line, starting with &gt; for ones the phone's owner sent, and the title is the contact.</p></div>
-      <div class="form-group stacked"><label>Back</label><textarea name="back" rows="4">${esc(ev.back)}</textarea></div>
+      <div class="form-group" data-field="date"><label></label><input type="text" name="date" value="${esc(ev.date)}" placeholder="'83 10 12"></div>
+      <div class="form-group stacked" data-field="front"><label></label><textarea name="front" rows="4">${esc(ev.front)}</textarea></div>
+      <div class="form-group stacked" data-field="texts"><label></label>
+        <div class="stl-rows" data-list="texts">${(msgs.length ? msgs : [{ who: "them", text: "" }]).map(textRow).join("")}</div>
+        <div class="stl-add">
+          <button type="button" data-action="addText"><i class="fa-solid fa-plus"></i> Add message</button>
+          <button type="button" data-action="addTime"><i class="fa-regular fa-clock"></i> Add time</button></div></div>
+      <div class="form-group stacked" data-field="email"><label></label>
+        <div class="stl-rows" data-list="email">${(mails.length ? mails : [{}]).map(mailBlock).join("")}</div>
+        <div class="stl-add"><button type="button" data-action="addMail"><i class="fa-solid fa-reply"></i> Add reply</button></div></div>
+      <div class="form-group stacked" data-field="back"><label></label><textarea name="back" rows="3">${esc(ev.back)}</textarea></div>
       <div class="form-group"><label>Hidden from players</label><input type="checkbox" name="hidden" ${this.tile?.hidden ? "checked" : ""}></div>
       ${this.tile ? "" : `<div class="form-group"><label>Straight to the locker</label><input type="checkbox" name="locker"><p class="hint">Prep it now, place it in a later session.</p></div>`}
       <footer class="form-footer"><button type="submit"><i class="fa-solid fa-thumbtack"></i> ${this.tile ? "Update" : "Place on scene"}</button></footer>`;
@@ -634,6 +759,42 @@ class EvidenceEditor extends ApplicationV2 {
 
   _replaceHTML(result, content) {
     content.innerHTML = result;
+  }
+
+  _onRender(context, options) {
+    super._onRender?.(context, options);
+    const select = this.element.querySelector("select[name=type]");
+    const show = () => {
+      for (const el of this.element.querySelectorAll("[data-field]")) {
+        const label = FIELDS[el.dataset.field][select.value];
+        el.hidden = !label;
+        if (label) el.querySelector(":scope > label").textContent = label;
+      }
+      EvidenceEditor.number(this.element.querySelector("[data-list=email]"));
+      this.setPosition({ height: "auto" });
+    };
+    select.addEventListener("change", show);
+    show();
+  }
+
+  static addRow(target, html) {
+    const list = target.closest("[data-field]").querySelector(".stl-rows");
+    list.insertAdjacentHTML("beforeend", html);
+    list.lastElementChild.querySelector("input, textarea")?.focus();
+    EvidenceEditor.number(list);
+  }
+
+  /** Labels the email blocks Original, Reply 1, Reply 2... */
+  static number(list) {
+    if (list?.dataset.list !== "email") return;
+    [...list.children].forEach((b, i) => (b.querySelector("legend").textContent = i ? `Reply ${i}` : "Original"));
+  }
+
+  static onWho(event, target) {
+    const row = target.closest(".stl-row");
+    row.dataset.who = row.dataset.who === "me" ? "them" : "me";
+    target.className = `stl-who ${row.dataset.who}`;
+    target.textContent = WHO_LABEL[row.dataset.who];
   }
 
   static onPick(event, target) {
@@ -644,6 +805,13 @@ class EvidenceEditor extends ApplicationV2 {
   static async onSubmit(event, form, formData) {
     const data = formData.object;
     data.hidden = !!data.hidden;
+    const rows = list => [...form.querySelectorAll(`[data-list=${list}] > .stl-row`)].map(row =>
+      Object.fromEntries([...row.querySelectorAll("[data-k]")].map(el => [el.dataset.k, el.value.trim()])));
+    if (data.type === "texts") {
+      const who = [...form.querySelectorAll("[data-list=texts] > .stl-row")].map(r => r.dataset.who);
+      data.msgs = rows("texts").map((m, i) => ({ who: who[i], text: m.text })).filter(m => m.text);
+    }
+    if (data.type === "email") data.mails = rows("email").filter(m => Object.values(m).some(v => v));
     ui.notifications.info("Developing evidence…");
     if (this.tile) await Evidence.edit(this.tile, data);
     else await Evidence.create(data);

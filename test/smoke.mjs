@@ -247,6 +247,61 @@ async function run(page, errors) {
 
   await page.screenshot({ path: path.join(SHOTS, "2-after-flips.png") });
 
+  await check("editor: text-message rows with sender toggle", async () => {
+    await page.evaluate(() => new STLCasefiles.EvidenceEditor().render({ force: true }));
+    const form = page.locator("form.stl-editor");
+    await form.waitFor();
+    await form.locator("select[name=type]").selectOption("texts");
+    assert(await form.locator("[data-field=image]").isHidden(), "image field still shown for texts");
+    await form.locator("input[name=title]").fill("Mom");
+    await form.locator("[data-list=texts] input").first().fill("Where are you?");
+    await form.locator("button[data-action=addTime]").click();
+    await form.locator("[data-list=texts] input").nth(1).fill("Tue 11:42 PM");
+    await form.locator("button[data-action=addText]").click();
+    await form.locator("[data-list=texts] input").nth(2).fill("Almost home");
+    await form.locator("[data-list=texts] .stl-row").nth(2).locator("button[data-action=who]").click();
+    await page.screenshot({ path: path.join(SHOTS, "4-editor-texts.png") });
+    const before = await page.evaluate(() => canvas.scene.tiles.size);
+    await form.locator("button[type=submit]").click();
+    await page.waitForFunction(n => canvas.scene.tiles.size > n, before, { timeout: 20000 });
+    const ev = await page.evaluate(() => canvas.scene.tiles.contents.at(-1).flags["stl-foundry"].evidence);
+    assert(JSON.stringify(ev.msgs) === JSON.stringify([{ who: "them", text: "Where are you?" }, { who: "time", text: "Tue 11:42 PM" }, { who: "me", text: "Almost home" }]),
+      `msgs were ${JSON.stringify(ev.msgs)}`);
+    await page.evaluate(() => STLCasefiles.EvidenceSheet.open(canvas.scene.tiles.contents.at(-1)));
+    await sleep(1500);
+    await page.screenshot({ path: path.join(SHOTS, "4b-texts-sheet.png") });
+    await page.evaluate(() => Object.values(ui.windows).forEach(w => w.close?.()) || foundry.applications.instances.forEach(a => a.id?.startsWith("stl-evidence") && a.close()));
+  });
+
+  await check("editor: email chain, and old-style evidence converts", async () => {
+    // Old evidence (header lines in `front`) should open with its fields filled in.
+    const tileId = await page.evaluate(async () => {
+      const before = new Set(canvas.scene.tiles.map(t => t.id));
+      await STLCasefiles.Evidence.create({ type: "email", title: "Re: the box", front: "From: Vance\nTo: Kolb\nDate: 1983\n\nBurn it." });
+      const tile = canvas.scene.tiles.find(t => !before.has(t.id));
+      await tile.unsetFlag("stl-foundry", "evidence.mails"); // as if made before this version
+      new STLCasefiles.EvidenceEditor(tile).render({ force: true });
+      return tile.id;
+    });
+    const form = page.locator("form.stl-editor").last();
+    await form.waitFor();
+    assert(await form.locator("[data-list=email] [data-k=from]").first().inputValue() === "Vance", "From not converted");
+    assert(await form.locator("[data-list=email] [data-k=body]").first().inputValue() === "Burn it.", "body not converted");
+    await form.locator("button[data-action=addMail]").click();
+    const reply = form.locator("[data-list=email] .stl-row").nth(1);
+    assert(await reply.locator("legend").textContent() === "Reply 1", "reply not labelled");
+    await reply.locator("[data-k=from]").fill("Kolb");
+    await reply.locator("[data-k=body]").fill("It's done.");
+    await page.screenshot({ path: path.join(SHOTS, "5-editor-email.png") });
+    await form.locator("button[type=submit]").click();
+    await page.waitForFunction(id => canvas.scene.tiles.get(id).flags["stl-foundry"].evidence.mails?.length === 2, tileId, { timeout: 20000 });
+    const front = await page.evaluate(id => canvas.scene.tiles.get(id).flags["stl-foundry"].evidence.front, tileId);
+    assert(front.startsWith("From: Kolb"), `front text not rebuilt newest first: ${front.slice(0, 40)}`);
+    await page.evaluate(id => STLCasefiles.EvidenceSheet.open(canvas.scene.tiles.get(id)), tileId);
+    await sleep(1500);
+    await page.screenshot({ path: path.join(SHOTS, "6-email-sheet.png") });
+  });
+
   await check("initiative tracker renders for a combat", async () => {
     await page.evaluate(async () => {
       const combat = await Combat.create({ scene: canvas.scene.id, active: true });
