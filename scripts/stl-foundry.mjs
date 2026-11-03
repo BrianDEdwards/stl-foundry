@@ -533,26 +533,28 @@ const Evidence = {
 /** Card-flip animation: squeeze the tile's sprite edge-on, swap the image, open it back out. Purely visual, per client. */
 const FlipAnim = {
   HALF: 160,
-  folded: new Map(), // tile id -> fallback timer while the card is edge-on
+  folded: new Map(), // tile id -> { timer, x, y }: fallback timer and the sprite's full scale while the card is edge-on
   landed: new Set(), // tile ids whose flip update arrived; the next refresh shows the new side
+  runs: new WeakMap(), // mesh -> current tween, so a newer tween stops an older one still running
 
-  /** Scales the sprite's width from `from` to `to` (fractions of its current size), lifting it slightly mid-turn. */
-  tween(mesh, from, to) {
-    const bx = mesh.scale.x, by = mesh.scale.y;
+  /** Scales the sprite's width from `from` to `to` (fractions of the full scale `base`), lifting it slightly mid-turn. */
+  tween(mesh, from, to, base) {
+    const run = {};
+    this.runs.set(mesh, run);
     const start = performance.now();
     const apply = t => {
       const e = 1 - (1 - t) ** 2;
       const k = from + (to - from) * e;
       const lift = 1 + 0.08 * (from > to ? e : 1 - e);
-      mesh.scale.set(bx * Math.max(k, 0.001) * lift, by * lift);
+      mesh.scale.set(base.x * Math.max(k, 0.001) * lift, base.y * lift);
     };
     apply(0);
     const step = now => {
-      if (mesh.destroyed) return;
+      if (mesh.destroyed || this.runs.get(mesh) !== run) return;
       const t = Math.min(1, (now - start) / this.HALF);
       apply(t);
       if (t < 1) requestAnimationFrame(step);
-      else if (to === 1) mesh.scale.set(bx, by);
+      else if (to === 1) mesh.scale.set(base.x, base.y);
     };
     requestAnimationFrame(step);
   },
@@ -560,22 +562,26 @@ const FlipAnim = {
   fold(tile) {
     const mesh = tile?.object?.mesh;
     if (!mesh || this.folded.has(tile.id)) return;
-    const bx = mesh.scale.x, by = mesh.scale.y;
+    const base = { x: mesh.scale.x, y: mesh.scale.y };
     // If the flip never lands (e.g. it failed), open the card back up.
-    this.folded.set(tile.id, setTimeout(() => {
+    const timer = setTimeout(() => {
       this.folded.delete(tile.id);
-      if (!mesh.destroyed) mesh.scale.set(bx, by);
-    }, 2000));
-    this.tween(mesh, 1, 0);
+      this.runs.delete(mesh);
+      if (!mesh.destroyed) mesh.scale.set(base.x, base.y);
+    }, 2000);
+    this.folded.set(tile.id, { timer, ...base });
+    this.tween(mesh, 1, 0, base);
   },
 
-  /** On refresh after the new image is drawn, Foundry has reset the sprite's size, so open it from edge-on. */
+  /** On refresh after the new image is drawn, open the card back out to the full scale saved when it folded. */
   unfold(tile) {
     const id = tile.document.id;
-    if (!this.landed.delete(id) || !tile.mesh) return;
-    clearTimeout(this.folded.get(id));
+    const saved = this.folded.get(id);
+    if (!this.landed.delete(id) || !tile.mesh || !saved) return;
+    clearTimeout(saved.timer);
     this.folded.delete(id);
-    this.tween(tile.mesh, 0, 1);
+    // Both sides are painted at the same size, so the saved scale is right even if this refresh ran mid-fold.
+    this.tween(tile.mesh, 0, 1, saved);
   }
 };
 

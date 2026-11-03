@@ -14,7 +14,7 @@ import path from "node:path";
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright");
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const ROOT = path.resolve(path.dirname(new globalThis.URL(import.meta.url).pathname), "..");
 const SHOTS = path.join(ROOT, "test", "shots");
 const IMAGE = process.env.FOUNDRY_IMAGE ?? "ghcr.io/briandedwards/foundry-casefiles:latest";
 const URL = "http://localhost:30000";
@@ -40,7 +40,16 @@ function boot() {
     sh(`docker pull ${IMAGE}`, { timeout: 600000 });
   }
   try { sh("docker rm -f casefiles"); } catch {}
-  sh(`docker run -d --name casefiles -p 30000:30000 -v "${ROOT}:/data/Data/modules/stl-foundry:ro" ${IMAGE}`);
+  // FOUNDRY_NODE: path to a newer node binary to use inside the container (for images built on too old a Node).
+  const node = process.env.FOUNDRY_NODE ? `-v "${process.env.FOUNDRY_NODE}:/usr/local/bin/node:ro"` : "";
+  // Foundry signs the license online on first start, so let the container use this machine's network and proxy.
+  const ca = process.env.NODE_EXTRA_CA_CERTS ?? "/root/.ccr/ca-bundle.crt";
+  const proxy = process.env.HTTPS_PROXY
+    ? `-e HTTPS_PROXY -e HTTP_PROXY -e NO_PROXY=localhost,127.0.0.1 -e NODE_USE_ENV_PROXY=1 -v "${ca}:/ca.crt:ro" -e NODE_EXTRA_CA_CERTS=/ca.crt` : "";
+  // Foundry only accepts the key without dashes; older images stored it with them.
+  const fixKey = `node -e 'const f="/data/Config/license.json",fs=require("fs");try{const l=JSON.parse(fs.readFileSync(f));if(l.license){l.license=l.license.replace(/-/g,"").trim();fs.writeFileSync(f,JSON.stringify(l))}}catch{}'`;
+  sh(`docker run -d --name casefiles --network host ${node} ${proxy} -v "${ROOT}:/data/Data/modules/stl-foundry:ro" `
+    + `--entrypoint sh ${IMAGE} -c '${fixKey.replace(/'/g, "'\\''")} && exec node /opt/foundry/main.js --dataPath=/data --port=30000 --world=casefiles-test --noupdate'`);
 }
 
 async function waitHttp() {
@@ -71,7 +80,7 @@ async function enterWorld(page) {
       await sleep(4000);
       await page.goto(`${URL}/join`);
     } else if (where.startsWith("/join")) {
-      const user = page.locator("select[name=userid]");
+      const user = page.locator("select[name=userId], select[name=userid]");
       const gm = await user.locator("option", { hasText: "Gamemaster" }).first().getAttribute("value");
       await user.selectOption(gm);
       await page.locator("button[name=join]").click();
@@ -115,6 +124,12 @@ const tileCentre = (page, id) => page.evaluate(id => {
   const ax = typeof t.anchorX === "number" ? t.anchorX : 0, ay = typeof t.anchorY === "number" ? t.anchorY : 0;
   return { x: t.x + (0.5 - ax) * t.width, y: t.y + (0.5 - ay) * t.height, w: t.width, h: t.height };
 }, id);
+/** Waits (software rendering here runs at a few frames a second) until the tile's flipped flag is `want`. */
+async function waitFlipped(page, id, want, ms = 20000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (await flipped(page, id) === want) return true; await sleep(150); }
+  return false;
+}
 const flipped = (page, id) => page.evaluate(id => canvas.scene.tiles.get(id).flags["stl-foundry"].evidence.flipped, id);
 
 async function run(page, errors) {
@@ -162,8 +177,7 @@ async function run(page, errors) {
     const c = await tileCentre(page, first);
     const s = await toScreen(page, c);
     await page.mouse.dblclick(s.x, s.y);
-    await sleep(900);
-    assert(await flipped(page, first) === true, "not flipped after double-click");
+    assert(await waitFlipped(page, first, true), "not flipped after double-click");
   });
 
   await check("double-click near each corner (inside) flips; just outside does not", async () => {
@@ -175,41 +189,45 @@ async function run(page, errors) {
       const was = await flipped(page, id);
       const s = await toScreen(page, { x: c.x + fx * c.w, y: c.y + fy * c.h });
       await page.mouse.dblclick(s.x, s.y);
-      await sleep(900);
-      assert(await flipped(page, id) !== was, `no flip at (${fx}, ${fy}) of the tile`);
+      assert(await waitFlipped(page, id, !was), `no flip at (${fx}, ${fy}) of the tile`);
     }
     const was = await flipped(page, id);
     const s = await toScreen(page, { x: c.x + 0.6 * c.w, y: c.y });
     await page.mouse.dblclick(s.x, s.y);
-    await sleep(900);
-    assert(await flipped(page, id) === was, "flipped from a double-click outside the tile");
+    assert(!await waitFlipped(page, id, !was, 3000), "flipped from a double-click outside the tile");
   });
 
   await check("two double-clicks in a row flip twice (no sticky clicks)", async () => {
     const id = ids.polaroid ?? first;
     const was = await flipped(page, id);
     const s = await toScreen(page, await tileCentre(page, id));
+    const count = page.evaluate(id => new Promise(resolve => {
+      let n = 0;
+      const hook = Hooks.on("updateTile", t => { if (t.id === id) n++; });
+      setTimeout(() => { Hooks.off("updateTile", hook); resolve(n); }, 8000);
+    }), id);
     for (let i = 0; i < 4; i++) { await page.mouse.click(s.x, s.y); await sleep(90); }
-    await sleep(1500);
-    assert(await flipped(page, id) === was, "expected two flips (back to the start), got one");
+    const n = await count;
+    assert(n === 2 && await flipped(page, id) === was, `expected two flips, got ${n}`);
   });
 
   await check("flip animation folds the card and opens it back to full size", async () => {
     const id = ids.book ?? first;
-    const full = await page.evaluate(id => canvas.scene.tiles.get(id).object.mesh.scale.x, id);
-    const sample = page.evaluate(async ({ id }) => {
-      const mesh = () => canvas.scene.tiles.get(id).object.mesh;
+    // Record every scale the animation sets (frames are too slow here to sample), then check the end state.
+    const r = await page.evaluate(async id => {
+      const mesh = canvas.scene.tiles.get(id).object.mesh;
+      const full = Math.abs(mesh.scale.x);
       let min = Infinity;
-      const end = performance.now() + 900;
-      while (performance.now() < end) { min = Math.min(min, Math.abs(mesh().scale.x)); await new Promise(requestAnimationFrame); }
-      return min;
-    }, { id });
-    await page.evaluate(id => STLCasefiles.Evidence.flip(canvas.scene.tiles.get(id)), id);
-    const min = await sample;
-    await sleep(500);
-    const after = await page.evaluate(id => canvas.scene.tiles.get(id).object.mesh.scale.x, id);
-    assert(min < Math.abs(full) * 0.5, `card never folded (narrowest ${min.toFixed(3)} of ${full.toFixed(3)})`);
-    assert(Math.abs(Math.abs(after) - Math.abs(full)) / Math.abs(full) < 0.05, `card stuck at ${after.toFixed(3)}, expected ${full.toFixed(3)}`);
+      const set = mesh.scale.set;
+      mesh.scale.set = function(x, y) { min = Math.min(min, Math.abs(x)); return set.call(this, x, y); };
+      await STLCasefiles.Evidence.flip(canvas.scene.tiles.get(id));
+      await new Promise(r => setTimeout(r, 3000));
+      const now = canvas.scene.tiles.get(id).object.mesh;
+      delete mesh.scale.set;
+      return { full, min, after: Math.abs(now.scale.x) };
+    }, id);
+    assert(r.min < r.full * 0.5, `card never folded (narrowest ${r.min.toFixed(3)} of ${r.full.toFixed(3)})`);
+    assert(Math.abs(r.after - r.full) / r.full < 0.05, `card stuck at ${r.after.toFixed(3)}, expected ${r.full.toFixed(3)}`);
   });
 
   await check("file away to the locker and place it again", async () => {

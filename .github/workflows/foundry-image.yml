@@ -36,7 +36,7 @@ jobs:
         run: |
           D=ctx/data
           mkdir -p $D/Config $D/Data/systems/casefiles-test $D/Data/worlds/casefiles-test $D/Data/modules
-          jq -n --arg k "$KEY" '{license: $k}' > $D/Config/license.json
+          jq -n --arg k "$KEY" '{license: ($k | gsub("[-[:space:]]"; ""))}' > $D/Config/license.json
           jq -n '{port: 30000, upnp: false, telemetry: false, noUpdate: true}' > $D/Config/options.json
           jq -n '{id: "casefiles-test", title: "Casefiles Test", version: "1.0.0",
             compatibility: {minimum: "13", verified: "14"},
@@ -47,7 +47,7 @@ jobs:
         run: |
           IMAGE=ghcr.io/$(echo "${{ github.repository_owner }}" | tr A-Z a-z)/foundry-casefiles
           cat > ctx/Dockerfile <<'DOCKER'
-          FROM node:22-slim
+          FROM node:24-slim
           COPY app /opt/foundry
           COPY data /data
           EXPOSE 30000
